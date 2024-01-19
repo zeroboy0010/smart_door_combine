@@ -8,12 +8,13 @@
 #include <EEPROM.h>
 
 //nfc
-#include <PN532_I2C.h>
+#include <PN532_HSU.h>
 #include <PN532.h>
 #include <NfcAdapter.h>
+PN532_HSU pn532hsu(Serial2);
+// PN532 nfc(pn532hsu);
+NfcAdapter nfc = NfcAdapter(pn532hsu);
 
-PN532_I2C pn532_i2c(Wire);
-NfcAdapter nfc = NfcAdapter(pn532_i2c);
 
 
 // keypad
@@ -37,6 +38,7 @@ String inputCode = "";
 
 uint8_t nrf_regitster_start;
 #define Selenoir_pin 2
+uint8_t Selenoir_enable = 0;
 
 String Input;
 String Output;
@@ -55,6 +57,9 @@ int readStringFromEEPROM(int addrOffset, String *strToRead);
 int config_button = 15;
 
 unsigned long last_read;
+unsigned long last_reset;
+uint8_t reset_count;
+uint8_t selenoir_reset_count;
 int connected_wifi;
 
 /* 1. Define the WiFi credentials */
@@ -86,12 +91,19 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // connect wifi
 void connect();
 void running_ap();
-
+void(* resetFunc) (void) = 0; //declare reset function @ address 0
 
 void setup() {
   EEPROM.begin(200);
   Serial.begin(9600);
   nfc.begin();
+
+  // uint32_t versiondata = nfc.getFirmwareVersion();
+  // if (! versiondata) {
+  //   Serial.print("Didn't find PN53x board");
+  //   while (1); // halt
+  // }
+  // nfc.SAMConfig();
   pinMode(config_button,INPUT_PULLUP);
   pinMode(Selenoir_pin ,OUTPUT);
 
@@ -101,7 +113,7 @@ void setup() {
 
   for (int i=0; i<30;i++){
     Serial.print(".");
-    if (digitalRead(config_button) == 1){   // 
+    if (digitalRead(config_button) == 0){   // 
       connected_wifi = 0;
       break;
     }
@@ -136,6 +148,19 @@ void setup() {
 
 void loop() {
 
+  while(millis() - last_reset > 500){
+    last_reset = millis();
+    if(digitalRead(config_button) == 0){
+      reset_count++;
+      if(reset_count >= 10){
+        resetFunc();
+      }
+    }
+    else {
+      reset_count = 0;
+    }
+  }
+
   if (connected_wifi == 0){
     running_ap();
 
@@ -161,22 +186,32 @@ void loop() {
   }
   if(Wifi_status == true && connected_wifi == 1){
 
-    while(millis() - last_read >= 100){
+    while(millis() - last_read >= 2000){
       last_read = millis();
+      if (Selenoir_enable  == 1){
+        selenoir_reset_count++;
+        Serial.println(selenoir_reset_count);
+        if (selenoir_reset_count  >= 3){
+          Selenoir_enable  = 0;
+        }
+      }
+      else  {
+        selenoir_reset_count = 0;
+      }
       if(nfc.tagPresent()){
         NfcTag tag = nfc.read();
         Serial.println(tag.getTagType());
         Serial.print("UID: ");Serial.println(tag.getUidString());
         if (tag.getUidString() == Tag_UID_read){
+          Serial.println("run!!");
           display.clearDisplay();
           display.setTextSize(2);
           display.setTextColor(SSD1306_WHITE);
           display.setCursor(25, 10);
           display.print("Correct");
-          digitalWrite(Selenoir_pin, HIGH);
+          Selenoir_enable = 1;
           display.display();
-          delay(5000);
-          digitalWrite(Selenoir_pin, LOW);
+          tag.getUidString().clear();
         }
         else {
           display.clearDisplay();
@@ -185,15 +220,11 @@ void loop() {
           display.print("Invalid!");
           // bot.sendMessage(CHAT_ID, "Someone is tring to unlock the door!", "");
           display.display();
-          delay(1000);
           display.clearDisplay();
         }
       }
 
     }
-
-
-
     char key = keypad.getKey();
       if (key) {
     if (key == '#') {
@@ -205,10 +236,8 @@ void loop() {
           display.setCursor(25, 10);
           display.print("Correct");
           // bot.sendMessage(CHAT_ID, "Someone unlocked the door", "");
-          digitalWrite(Selenoir_pin, HIGH);
+          Selenoir_enable = 1;
           display.display();
-          delay(5000);
-          digitalWrite(Selenoir_pin, LOW);
           inputCode = ""; // Reset the entered code
         }else {
           display.clearDisplay();
@@ -243,6 +272,12 @@ void loop() {
       display.clearDisplay();
       display.display();
     }
+  }
+  if (Selenoir_enable == 1){
+    digitalWrite(Selenoir_pin, HIGH);
+  }
+  else{
+    digitalWrite(Selenoir_pin, LOW);
   }
 }
 
