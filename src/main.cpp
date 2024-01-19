@@ -1,9 +1,10 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <ArduinoJson.h>
 #include <Adafruit_SSD1306.h>
 #include <Keypad.h>
-
+// telegram bot
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>  
 // eeprom
 #include <EEPROM.h>
 
@@ -16,6 +17,12 @@ PN532_HSU pn532hsu(Serial2);
 NfcAdapter nfc = NfcAdapter(pn532hsu);
 
 
+// Initialize Telegram BOT
+#define BOTtoken "6597802948:AAHiJvLsXpzgeKHNKCgJBLyR15Yk8hYkBNw"  // your Bot Token (Get from Botfather)
+//  my telegram id "995675270"
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
 
 // keypad
 // Define the keypad layout
@@ -50,6 +57,8 @@ String Password_Read;
 String SSID_Read;
 String Password_door_Read;
 String Tag_UID_read;
+String Telegram_ID_read;
+String Telegram_ID;
 
 int writeStringToEEPROM(int addrOffset, const String &strToWrite);
 int readStringFromEEPROM(int addrOffset, String *strToRead);
@@ -94,16 +103,11 @@ void running_ap();
 void(* resetFunc) (void) = 0; //declare reset function @ address 0
 
 void setup() {
-  EEPROM.begin(200);
+  EEPROM.begin(300);
   Serial.begin(9600);
   nfc.begin();
+  client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
 
-  // uint32_t versiondata = nfc.getFirmwareVersion();
-  // if (! versiondata) {
-  //   Serial.print("Didn't find PN53x board");
-  //   while (1); // halt
-  // }
-  // nfc.SAMConfig();
   pinMode(config_button,INPUT_PULLUP);
   pinMode(Selenoir_pin ,OUTPUT);
 
@@ -142,8 +146,18 @@ void setup() {
     server.begin();
   }
   if (Wifi_status == true && connected_wifi == 1){
-    connect();
+      connect();
+      configTime(0, 0, "pool.ntp.org"); // get UTC time via NTP
+      time_t now = time(nullptr);
+      while (now < 24 * 3600)
+      {
+      Serial.print(".");
+      delay(100);
+      now = time(nullptr);
+      }
+    
   }
+
 }
 
 void loop() {
@@ -178,7 +192,7 @@ void loop() {
       Serial.println(tag.getTagType());
       Serial.print("UID: ");Serial.println(tag.getUidString());
       // register uid 
-      int Offset = writeStringToEEPROM(150, tag.getUidString()); // 50 bytes
+      int Offset = writeStringToEEPROM(200, tag.getUidString()); // 50 bytes
       Serial.println("UID_scan = " + tag.getUidString() + "\n length = " + int(Offset - 50));
       EEPROM.commit();
       nrf_regitster_start = 0;
@@ -209,6 +223,7 @@ void loop() {
           display.setTextColor(SSD1306_WHITE);
           display.setCursor(25, 10);
           display.print("Correct");
+          bot.sendMessage(Telegram_ID_read, "Your door unlocked by tag!!", "");
           Selenoir_enable = 1;
           display.display();
           tag.getUidString().clear();
@@ -218,7 +233,7 @@ void loop() {
           display.setTextSize(2);
           display.setCursor(20, 10);
           display.print("Invalid!");
-          // bot.sendMessage(CHAT_ID, "Someone is tring to unlock the door!", "");
+          bot.sendMessage(Telegram_ID_read, "Someone is tring to unlock the door!", "");
           display.display();
           display.clearDisplay();
         }
@@ -235,7 +250,7 @@ void loop() {
           display.setTextColor(SSD1306_WHITE);
           display.setCursor(25, 10);
           display.print("Correct");
-          // bot.sendMessage(CHAT_ID, "Someone unlocked the door", "");
+          bot.sendMessage(Telegram_ID_read, "Someone unlocked the door", "");
           Selenoir_enable = 1;
           display.display();
           inputCode = ""; // Reset the entered code
@@ -244,7 +259,7 @@ void loop() {
           display.setTextSize(2);
           display.setCursor(20, 10);
           display.print("Invalid!");
-          // bot.sendMessage(CHAT_ID, "Someone is tring to unlock the door!", "");
+          bot.sendMessage(Telegram_ID_read, "Someone is tring to unlock the door!", "");
           display.display();
           delay(1000);
           display.clearDisplay();
@@ -285,7 +300,8 @@ void connect(){
   readStringFromEEPROM(0, &SSID_Read);
   readStringFromEEPROM(50, &Password_Read);
   readStringFromEEPROM(100, &Password_door_Read);
-  readStringFromEEPROM(150,&Tag_UID_read);
+  readStringFromEEPROM(200,&Tag_UID_read);
+  readStringFromEEPROM(150,&Telegram_ID_read);
   // // convert to char from string
   String(SSID_Read).toCharArray(WIFI_SSID,SSID_Read.length() + 1);
   String(Password_Read).toCharArray(WIFI_PASSWORD,Password_Read.length() + 1);
@@ -295,6 +311,7 @@ void connect(){
   Serial.println("Password == " + Password_Read);
   Serial.println("Password_door == " + Password_door_Read);
   Serial.println("UID == " + Tag_UID_read);
+  Serial.println("Telegram_ID_read == " + Telegram_ID_read);
   // connect wifi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -366,13 +383,16 @@ void running_ap(){
               Serial.println(header.c_str());
               String SSID = header.substring(header.indexOf("SSID=") + 5 ,header.indexOf("&Password"));
               String Password = header.substring(header.indexOf("Password=") + 9,header.indexOf("&Password_door"));
-              String Password_door = header.substring(header.indexOf("Password_door=") + 14,header.indexOf(" HTTP"));
+              String Password_door = header.substring(header.indexOf("Password_door=") + 14,header.indexOf("&Telegram_ID"));
+              String Telegram_ID = header.substring(header.indexOf("Telegram_ID=") + 12,header.indexOf(" HTTP"));
               Serial.print("SSID = ");
               Serial.println(SSID);
               Serial.print("Password = ");
               Serial.println(Password);
               Serial.print("Password_door = ");
               Serial.println(Password_door);
+              Serial.print("Telegram_ID = ");
+              Serial.println(Telegram_ID);
               
               if(SSID.length() > 1){
                 int Offset = writeStringToEEPROM(0, SSID);  // 50 bytes
@@ -384,9 +404,13 @@ void running_ap(){
               }
               if(Password_door.length() > 1){
                 int Offset = writeStringToEEPROM(100, Password_door); // 50 bytes
-                Serial.println("Password_door = " + Password_door + "\n length = " + int(Offset - 50));
+                Serial.println("Password_door = " + Password_door + "\n length = " + int(Offset - 100));
               }
-              if ((SSID.length() > 1) || (Password.length() > 1) || (Password_door.length() > 1)){
+              if (Telegram_ID.length()>1){
+                int Offset = writeStringToEEPROM(150, Telegram_ID); // 50 bytes
+                Serial.println("Telegram_ID = " + Telegram_ID + "\n length = " + int(Offset - 200));
+              }
+              if ((SSID.length() > 1) || (Password.length() > 1) || (Password_door.length() > 1) || Telegram_ID.length()>1){
                 EEPROM.commit();
               }
               
@@ -432,6 +456,9 @@ void running_ap(){
             client.println("<label for=\"Password_door\">Password_door:</label>");
             client.println("<input type=\text\" id=\"Password_door\" name=\"Password_door\" placeholder=\"Password_door\"><br><br>");
 
+            client.println("<label for=\"Your Telgram ID\">Telegram_ID:</label>");
+            client.println("<input type=\text\" id=\"Telegram_ID\" name=\"Telegram_ID\" placeholder=\"Telegram_ID\"><br><br>");
+
             client.println("<input type=\"submit\" value=\"Submit\" class=\"button button1\">");
             client.println("</form>");
             client.println("<p><a href=\"/nfc_start\"><button class=\"button button2\">NFC register</button></a></p>"); 
@@ -456,8 +483,6 @@ void running_ap(){
     Serial.println("");
   }
 }
-
-
 
 
 int writeStringToEEPROM(int addrOffset, const String &strToWrite)
