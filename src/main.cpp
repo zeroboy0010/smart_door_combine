@@ -7,6 +7,15 @@
 // eeprom
 #include <EEPROM.h>
 
+//nfc
+#include <PN532_I2C.h>
+#include <PN532.h>
+#include <NfcAdapter.h>
+
+PN532_I2C pn532_i2c(Wire);
+NfcAdapter nfc = NfcAdapter(pn532_i2c);
+
+
 // keypad
 // Define the keypad layout
 const byte ROW_NUM = 4; // four rows
@@ -26,22 +35,26 @@ Keypad keypad = Keypad(makeKeymap(keys), pin_rows, pin_column, ROW_NUM, COLUMN_N
 String inputCode = "";
 // end
 
-
-
+uint8_t nrf_regitster_start;
+#define Selenoir_pin 2
 
 String Input;
 String Output;
 String Password;
 String SSID;
+String Tag_UID;
 String Password_door;
 String Password_Read;
 String SSID_Read;
 String Password_door_Read;
+String Tag_UID_read;
+
 int writeStringToEEPROM(int addrOffset, const String &strToWrite);
 int readStringFromEEPROM(int addrOffset, String *strToRead);
 
 int config_button = 15;
 
+unsigned long last_read;
 int connected_wifi;
 
 /* 1. Define the WiFi credentials */
@@ -76,19 +89,19 @@ void running_ap();
 
 
 void setup() {
-  EEPROM.begin(150);
+  EEPROM.begin(200);
   Serial.begin(9600);
+  nfc.begin();
   pinMode(config_button,INPUT_PULLUP);
-  pinMode(2,OUTPUT);
+  pinMode(Selenoir_pin ,OUTPUT);
 
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println(F("SSD1306 allocation failed"));
-    for(;;);  // Don't proceed, loop forever
   }
 
   for (int i=0; i<30;i++){
     Serial.print(".");
-    if (digitalRead(config_button) == 0){
+    if (digitalRead(config_button) == 1){   // 
       connected_wifi = 0;
       break;
     }
@@ -125,8 +138,62 @@ void loop() {
 
   if (connected_wifi == 0){
     running_ap();
+
+    if (nrf_regitster_start == 1){
+      // nfr
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(25, 10);
+      display.print("Register your nfc!!");
+
+      // nfc wait for scan
+      while(!nfc.tagPresent());
+      NfcTag tag = nfc.read();
+      Serial.println(tag.getTagType());
+      Serial.print("UID: ");Serial.println(tag.getUidString());
+      // register uid 
+      int Offset = writeStringToEEPROM(150, tag.getUidString()); // 50 bytes
+      Serial.println("UID_scan = " + tag.getUidString() + "\n length = " + int(Offset - 50));
+      EEPROM.commit();
+      nrf_regitster_start = 0;
+    }
   }
   if(Wifi_status == true && connected_wifi == 1){
+
+    while(millis() - last_read >= 100){
+      last_read = millis();
+      if(nfc.tagPresent()){
+        NfcTag tag = nfc.read();
+        Serial.println(tag.getTagType());
+        Serial.print("UID: ");Serial.println(tag.getUidString());
+        if (tag.getUidString() == Tag_UID_read){
+          display.clearDisplay();
+          display.setTextSize(2);
+          display.setTextColor(SSD1306_WHITE);
+          display.setCursor(25, 10);
+          display.print("Correct");
+          digitalWrite(Selenoir_pin, HIGH);
+          display.display();
+          delay(5000);
+          digitalWrite(Selenoir_pin, LOW);
+        }
+        else {
+          display.clearDisplay();
+          display.setTextSize(2);
+          display.setCursor(20, 10);
+          display.print("Invalid!");
+          // bot.sendMessage(CHAT_ID, "Someone is tring to unlock the door!", "");
+          display.display();
+          delay(1000);
+          display.clearDisplay();
+        }
+      }
+
+    }
+
+
+
     char key = keypad.getKey();
       if (key) {
     if (key == '#') {
@@ -138,10 +205,10 @@ void loop() {
           display.setCursor(25, 10);
           display.print("Correct");
           // bot.sendMessage(CHAT_ID, "Someone unlocked the door", "");
-          digitalWrite(2, HIGH);
+          digitalWrite(Selenoir_pin, HIGH);
           display.display();
           delay(5000);
-          digitalWrite(2, LOW);
+          digitalWrite(Selenoir_pin, LOW);
           inputCode = ""; // Reset the entered code
         }else {
           display.clearDisplay();
@@ -150,7 +217,7 @@ void loop() {
           display.print("Invalid!");
           // bot.sendMessage(CHAT_ID, "Someone is tring to unlock the door!", "");
           display.display();
-          delay(2000);
+          delay(1000);
           display.clearDisplay();
           inputCode = ""; // Reset the entered code
         }
@@ -183,6 +250,7 @@ void connect(){
   readStringFromEEPROM(0, &SSID_Read);
   readStringFromEEPROM(50, &Password_Read);
   readStringFromEEPROM(100, &Password_door_Read);
+  readStringFromEEPROM(150,&Tag_UID_read);
   // // convert to char from string
   String(SSID_Read).toCharArray(WIFI_SSID,SSID_Read.length() + 1);
   String(Password_Read).toCharArray(WIFI_PASSWORD,Password_Read.length() + 1);
@@ -191,6 +259,7 @@ void connect(){
   Serial.println("SSID == " + SSID_Read);
   Serial.println("Password == " + Password_Read);
   Serial.println("Password_door == " + Password_door_Read);
+  Serial.println("UID == " + Tag_UID_read);
   // connect wifi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
@@ -242,6 +311,11 @@ void running_ap(){
             client.println();
             
             // turns the GPIOs on and off
+            if(header.indexOf("GET /nfc_start") >= 0){
+              // nfc tast
+              Serial.println("nrf_regitster_start!!");
+              nrf_regitster_start = 1;
+            }
             
             if (header.indexOf("GET /zero/on") >= 0) {
               Serial.println("GPIO 26 on");
@@ -293,7 +367,13 @@ void running_ap(){
             client.println(".button { background-color: #4CAF50; border: none; color: white; padding: 16px 40px;");
             client.println("text-decoration: none; font-size: 30px; margin: 2px; cursor: pointer;}");
             client.println(".button2 {background-color: #555555;}</style></head>");
-            
+
+            client.println("<style>.button {border: none;color: white;padding: 16px 32px;text-align: center;text-decoration: none;display: inline-block;font-size:");
+            client.println("16px;margin: 4px 2px;transition-duration: 0.4s;cursor: pointer;}");
+            client.println(".button1 {background-color: white; color: black; border: 2px solid #04AA6D;}");
+            client.println(".button1:hover {background-color: #04AA6D;color: white;}");
+            client.println(".button2 {background-color: white; color: black; border: 2px solid #008CBA;}");
+            client.println(".button2:hover {background-color: #008CBA;color: white;}</style>");
             // Web Page Heading
             client.println("<body><h1>Testing ESP32 Web Server for smart door lock</h1>");
             
@@ -306,7 +386,7 @@ void running_ap(){
               client.println("<p><a href=\"/zero/off\"><button class=\"button button2\">OFF</button></a></p>");
             } 
                
-            client.println("<form action=\"/page_like_counter\">");
+            client.println("<form action=\"/smart_door_lock\">");
 
             client.println("<label for=\"SSID\">SSID:</label>");
             client.println("<input type=\text\" id=\"SSID\" name=\"SSID\" placeholder=\"wifi name\"><br><br>");
@@ -317,8 +397,9 @@ void running_ap(){
             client.println("<label for=\"Password_door\">Password_door:</label>");
             client.println("<input type=\text\" id=\"Password_door\" name=\"Password_door\" placeholder=\"Password_door\"><br><br>");
 
-            client.println("<input type=\"submit\" value=\"Submit\">");
+            client.println("<input type=\"submit\" value=\"Submit\" class=\"button button1\">");
             client.println("</form>");
+            client.println("<p><a href=\"/nfc_start\"><button class=\"button button2\">NFC register</button></a></p>"); 
             
             // The HTTP response ends with another blank line
             client.println();
