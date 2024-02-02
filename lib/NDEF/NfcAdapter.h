@@ -17,7 +17,7 @@
 #define TAG_TYPE_4 (4)
 #define TAG_TYPE_UNKNOWN (99)
 
-#define IRQ   (2)
+#define IRQ   (5)
 #define RESET (3)  // Not connected by default on the NFC Shield
 
 class NfcAdapter {

@@ -8,7 +8,7 @@
 #include <PN532_HSU.h>
 #include <PN532.h>
 #include <NfcAdapter.h>
-
+#include "esp_heap_caps.h"
 // Initialize Telegram BOT
 #define BOTtoken "6597802948:AAHiJvLsXpzgeKHNKCgJBLyR15Yk8hYkBNw"  // your Bot Token (Get from Botfather)
 
@@ -16,7 +16,7 @@
 char WIFI_SSID[20];
 char WIFI_PASSWORD[20];
 bool Wifi_status = true;
-bool connected_wifi;
+bool to_connect_wifi;
 //freertos
 QueueHandle_t UID_String;
 QueueHandle_t Password_login;
@@ -29,8 +29,13 @@ void Task_read_RFID( void *pvParameters );
 void Task_read_get_key_pad  ( void *pvParameters );
 void Task_Data  ( void *pvParameters );
 void Task_Run_AP  ( void *pvParameters );
-void Task_diplay(void *pvParameters);
+void Main_task(void *pvParameters);
 void Task_telegram_bot(void * pvParameters);
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+// Define OLED display object
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 
 //globaldata from eeprom
@@ -55,30 +60,63 @@ int config_button = 15;
 void connect();
 void running_ap();
 void(* resetFunc) (void) = 0; //declare reset function @ address 0
+void cardreading(){
+  Serial.println("recieve");
+}
+
+unsigned long last_ttick;
+uint8_t ttick;
 
 void setup() {
   EEPROM.begin(300);
   Serial.begin(9600);
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+  }
+  Serial.println("LCD ready!!!");
   pinMode(config_button,INPUT_PULLUP);
+  
+  attachInterrupt(digitalPinToInterrupt(5), cardreading, FALLING);
   //global data
 
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 10);
+  display.print("Start!!");
+  display.display();
+  vTaskDelay(pdMS_TO_TICKS(2000));
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 10);
   for (int i=0; i<30;i++){
     Serial.print(".");
+    display.print(".");
+    display.display();
     if (digitalRead(config_button) == 0){   // 
-      connected_wifi = 0;
+      to_connect_wifi = 0;
+      Wifi_status = 0 ;
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(25, 10);
+      display.print("Config mode!!");
+      display.display();
       break;
     }
     else {
-      connected_wifi = 1;
+      to_connect_wifi = 1;
     }
     vTaskDelay(pdMS_TO_TICKS(200));
   }
 
-  if (Wifi_status == true && connected_wifi == 1){
-      connect(); 
-      vTaskDelay(pdMS_TO_TICKS(2000));
-  }
 
+  if (Wifi_status == true && to_connect_wifi == 1){
+      connect(); 
+      
+  }
+  vTaskDelay(pdMS_TO_TICKS(2000));
   right_log = xSemaphoreCreateBinary();
   wrong_log = xSemaphoreCreateBinary();
   // put your setup code here, to run once:
@@ -97,18 +135,18 @@ void setup() {
     , 1 // Task handle is not used here - simply pass NULL
     );
 
-  if (connected_wifi == 0){
+  if (to_connect_wifi == 0 ){
     xTaskCreatePinnedToCore(
     Task_Run_AP
     ,  "Task_Run_AP" // A name just for humans
-    ,  2048 * 5       // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
+    ,  2048 * 7      // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
     ,  NULL // Task parameter which can modify the task behavior. This must be passed as pointer to void.
     ,  4  // Priority
     ,  NULL
     , 0 // Task handle is not used here - simply pass NULL
     );
   }
-  else{
+  else if (Wifi_status == 1){
     xTaskCreatePinnedToCore(
     Task_telegram_bot
     ,  "Task_telegram_bot" // A name just for humans
@@ -118,31 +156,44 @@ void setup() {
     ,  NULL
     , 0 // Task handle is not used here - simply pass NULL
     );
-  }
-
-  xTaskCreatePinnedToCore(
-    Task_read_RFID
-    ,  "Task_read_RFID" // A name just for humans
-    ,  2048 * 4      // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
-    ,  NULL // Task parameter which can modify the task behavior. This must be passed as pointer to void.
-    ,  4  // Priority
-    ,  NULL
-    , 1 // Task handle is not used here - simply pass NULL
-    );
-
     xTaskCreatePinnedToCore(
-    Task_diplay
-    ,  "Task_diplay" // A name just for humans
+    Main_task
+    ,  "Main_task" // A name just for humans
     ,  2048 * 6       // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
     ,  NULL // Task parameter which can modify the task behavior. This must be passed as pointer to void.
     ,  5  // Priority
     ,  NULL
     , 1 // Task handle is not used here - simply pass NULL
     );
+  }
+
+  xTaskCreatePinnedToCore(
+    Task_read_RFID
+    ,  "Task_read_RFID" // A name just for humans
+    ,  2048 * 5      // The stack size can be checked by calling `uxHighWaterMark = uxTaskGetStackHighWaterMark(NULL);`
+    ,  NULL // Task parameter which can modify the task behavior. This must be passed as pointer to void.
+    ,  4  // Priority
+    ,  NULL
+    , 1 // Task handle is not used here - simply pass NULL
+    );
+
+
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
+  while (millis() -  last_ttick >1000){
+    last_ttick = millis();
+    if (digitalRead(config_button) ==0){
+      ttick++;
+      if (ttick > 4){
+        resetFunc();
+      }
+    }
+    else{
+      ttick = 0;
+    }
+  }
 }
 
 // put function definitions here:
@@ -150,7 +201,7 @@ void Task_read_RFID( void *pvParameters ){
   PN532_HSU pn532hsu(Serial2);
   NfcAdapter nfc = NfcAdapter(pn532hsu);
   nfc.begin();
-  // vTaskDelay(pdMS_TO_TICKS(1000));
+  vTaskDelay(pdMS_TO_TICKS(1000));
   for(;;){
     if(nfc.tagPresent()){
       NfcTag tag = nfc.read();
@@ -160,7 +211,7 @@ void Task_read_RFID( void *pvParameters ){
       xQueueSend(UID_String, ( void * ) &data_read, 1);
       data_read.clear();
     }
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(1200));
   }
   // vTaskDelete(NULL);
 }
@@ -186,28 +237,32 @@ void Task_read_get_key_pad  ( void *pvParameters ){
     if(get_key){
       xQueueSend(Password_login, ( void * ) &get_key, portMAX_DELAY);
     }
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }
 
-void Task_diplay(void *pvParameters){
+void Main_task(void *pvParameters){
   //
   #define Selenoir_pin 2
   pinMode(Selenoir_pin ,OUTPUT);
   // display
-  #define SCREEN_WIDTH 128
-  #define SCREEN_HEIGHT 32
-  // Define OLED display object
-  Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306 allocation failed"));
-  }
-  Serial.println("LCD ready!!!");
+
   String inputCode = "";
   vTaskDelay(pdMS_TO_TICKS(500));
+  if (Wifi_status == 1){
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(25, 10);
+    display.print("working....");
+    display.display();
+  }
+  vTaskDelay(pdMS_TO_TICKS(500));
+
   String UID_get;
+  // pinMode(5,INPUT);
   for(;;){  
-    
+    // Serial.println(digitalRead(5));
     if(xQueueReceive(UID_String,&UID_get, 1) == pdTRUE){
       if(UID_get == Tag_UID_read){
         UID_get.clear();
@@ -305,12 +360,20 @@ void Task_Run_AP  ( void *pvParameters ){
   const int output26 = LED_BUILTIN;
 
 
+
   WiFi.softAP(ssid, password);
   Serial.print("[+] AP Created with IP Gateway ");
   Serial.println(WiFi.softAPIP());
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 10);
+  display.print(WiFi.softAPIP());
+  display.display();
+  vTaskDelay(pdMS_TO_TICKS(1000));
   pinMode(output26, OUTPUT);
   digitalWrite(output26, LOW);
-    server.begin();
+  server.begin();
   for(;;){
     WiFiClient client = server.available();   // Listen for incoming clients
 
@@ -341,7 +404,14 @@ void Task_Run_AP  ( void *pvParameters ){
                 if (xQueueReceive(UID_String,&store_UID, portMAX_DELAY) == pdTRUE){
                   int Offset = writeStringToEEPROM(200, store_UID); // 50 bytes
                   Serial.println("UID_scan = " + store_UID + "\n length = " + int(Offset - 200));
+                  display.clearDisplay();
+                  display.setTextSize(2);
+                  display.setTextColor(SSD1306_WHITE);
+                  display.setCursor(25, 10);
+                  display.print("Save card!!");
+                  display.display();
                   EEPROM.commit();
+                  vTaskDelay(pdMS_TO_TICKS(1000));
                 }
               }
               
@@ -388,6 +458,12 @@ void Task_Run_AP  ( void *pvParameters ){
                 }
                 if ((SSID.length() > 1) || (Password.length() > 1) || (Password_door.length() > 1) || Telegram_ID.length()>1){
                   EEPROM.commit();
+                  display.clearDisplay();
+                  display.setTextSize(2);
+                  display.setTextColor(SSD1306_WHITE);
+                  display.setCursor(25, 10);
+                  display.print("Save!!");
+                  display.display();
                 }
                 
               }
@@ -478,12 +554,15 @@ void Task_telegram_bot(void * pvParameters){
   for(;;){
     if(xSemaphoreTake(right_log, 10) == pdTRUE){
       Serial.println("telegram!! send");
-      bot.sendMessage(Telegram_ID_read, "Your door unlocked by tag!!", "");
+      bot.sendMessage(Telegram_ID_read, "Your door unlocked", "");
     }
     else if (xSemaphoreTake(wrong_log, 10) == pdTRUE) {
       Serial.println("telegram!! send");
-      bot.sendMessage(Telegram_ID_read, "Someone is tring to unlock the door!", "");
+      bot.sendMessage(Telegram_ID_read, "Someone is trying to unlock the door!", "");
     }
+    size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    Serial.print("Free heap: ");
+    Serial.println(freeHeap);
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
@@ -510,20 +589,35 @@ void connect(){
 
   Serial.print("Connecting to Wi-Fi");
   unsigned long ms = millis();
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(10, 10);
+  display.print("Connecting to wifi");
+  display.display();
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 10);
   while (WiFi.status() != WL_CONNECTED)
   {
+      display.print(".");
+      display.display();
       Serial.print(".");
       delay(300);
       if (millis() - ms >= 10000){
+        Wifi_status = 0;
         break;
         Serial.println("cant connect wifi");
-        // connected_wifi = 0;
+        // to_connect_wifi = 0;
       }
       else {
-        // connected_wifi = 1;
+        Wifi_status = 1;
+        // to_connect_wifi = 1;
       }
   }
-  if (Wifi_status == true && connected_wifi == 1){
+  if (Wifi_status == true && to_connect_wifi == 1){
     Serial.println();
     Serial.print("Connected with IP: ");
     Serial.println(WiFi.localIP());
